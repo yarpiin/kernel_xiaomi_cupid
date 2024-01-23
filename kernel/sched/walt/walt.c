@@ -106,6 +106,7 @@ u64 walt_ktime_get_ns(void)
 		return ktime_to_ns(ktime_last);
 	return ktime_get_ns();
 }
+EXPORT_SYMBOL_GPL(walt_ktime_get_ns);
 
 static void walt_resume(void)
 {
@@ -481,6 +482,7 @@ static void walt_sched_account_irqstart(int cpu, struct task_struct *curr)
 
 static void walt_update_task_ravg(struct task_struct *p, struct rq *rq, int event,
 						u64 wallclock, u64 irqtime);
+
 static void walt_sched_account_irqend(int cpu, struct task_struct *curr, u64 delta)
 {
 	struct rq *rq = cpu_rq(cpu);
@@ -1508,23 +1510,6 @@ static inline unsigned int load_to_freq(struct rq *rq, unsigned int load)
 {
 	return mult_frac(cpu_max_possible_freq(cpu_of(rq)), load,
 		 (unsigned int)arch_scale_cpu_capacity(cpu_of(rq)));
-}
-
-static bool do_pl_notif(struct rq *rq)
-{
-	struct walt_rq *wrq = (struct walt_rq *) rq->android_vendor_data1;
-	u64 prev = wrq->old_busy_time;
-	u64 pl = wrq->walt_stats.pred_demands_sum_scaled;
-	int cpu = cpu_of(rq);
-
-	/* If already at max freq, bail out */
-	if (capacity_orig_of(cpu) == capacity_curr_of(cpu))
-		return false;
-
-	prev = max(prev, wrq->old_estimated_time);
-
-	/* 400 MHz filter. */
-	return (pl > prev) && (load_to_freq(rq, pl - prev) > 400000);
 }
 
 static void rollover_cpu_window(struct rq *rq, bool full_window)
@@ -3996,13 +3981,15 @@ static void android_rvh_try_to_wake_up_success(void *unused, struct task_struct 
 {
 	unsigned long flags;
 	int cpu = p->cpu;
+	struct walt_task_struct *wts = (struct walt_task_struct *) p->android_vendor_data1;
 
 	if (unlikely(walt_disabled))
 		return;
 
+	if (wts->mvp_list.prev == NULL && wts->mvp_list.next == NULL)
+		init_new_task_load(p);
+
 	raw_spin_lock_irqsave(&cpu_rq(cpu)->lock, flags);
-	if (do_pl_notif(cpu_rq(cpu)))
-		waltgov_run_callback(cpu_rq(cpu), WALT_CPUFREQ_PL);
 	raw_spin_unlock_irqrestore(&cpu_rq(cpu)->lock, flags);
 }
 
@@ -4142,6 +4129,8 @@ static void android_rvh_sched_exec(void *unused, bool *cond)
 
 static void android_rvh_build_perf_domains(void *unused, bool *eas_check)
 {
+	if (unlikely(walt_disabled))
+		return;
 	*eas_check = true;
 }
 
@@ -4218,15 +4207,10 @@ static int walt_init_stop_handler(void *data)
 	struct task_struct *g, *p;
 	u64 window_start_ns, nr_windows;
 	struct walt_rq *wrq;
-	int level = 0;
 
 	read_lock(&tasklist_lock);
 	for_each_possible_cpu(cpu) {
-		if (level == 0)
-			raw_spin_lock(&cpu_rq(cpu)->lock);
-		else
-			raw_spin_lock_nested(&cpu_rq(cpu)->lock, level);
-		level++;
+		raw_spin_lock(&cpu_rq(cpu)->lock);
 	}
 
 	do_each_thread(g, p) {
