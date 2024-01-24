@@ -293,7 +293,7 @@ static int find_target_boost(unsigned long util, struct waltgov_policy *wg_polic
 	return ret;
 }
 #define DEFAULT_TARGET_LOAD_THRESH 1024
-#define DEFAULT_TARGET_LOAD_SHIFT 4
+#define DEFAULT_TARGET_LOAD_SHIFT 8
 static void waltgov_walt_adjust(struct waltgov_cpu *wg_cpu, unsigned long cpu_util,
 				unsigned long nl, unsigned long *util,
 				unsigned long *max)
